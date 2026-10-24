@@ -1,0 +1,67 @@
+name: Fork Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build
+        required: true
+      tag:
+        description: Release tag to create, e.g. v1.1.76-json-variant.1
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  INGESTR_DISABLE_TELEMETRY: "true"
+  DISABLE_TELEMETRY: "true"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, archive: ingestr_Linux_x86_64 }
+          - { runner: ubuntu-24.04-arm, archive: ingestr_Linux_arm64 }
+          - { runner: macos-15-intel, archive: ingestr_Darwin_x86_64 }
+          - { runner: macos-15, archive: ingestr_Darwin_arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make build VERSION=${{ inputs.tag }}
+      - run: |
+          test "$(bin/ingestr --version)" = "ingestr version ${{ inputs.tag }}"
+          tar -C bin -czf ${{ matrix.archive }}.tar.gz ingestr
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: assets
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.ref }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          gh release create "$TAG" assets/*.tar.gz --target "$sha" --prerelease --title "$TAG" \
+            --notes "Fork build of $REF at $sha, built natively on GitHub-hosted runners."
